@@ -1,0 +1,78 @@
+
+model:
+  feature_dim: 12
+  position_dim: 2
+  d_in: 8
+  n_layers: 3
+  encoding_blocks: [8, 8]
+  fc_blocks: [8, 8]
+  num_classes: 2
+  batch_size: 2
+  do_compile: false
+
+data:
+  class_path: data.datamodule.PointCloudDataModule
+  init_args:
+    input_dir: /pscratch/sd/p/pmtuan/trackml/feature_store
+    input_features: [x,     r,     z,    cell_count,   cell_val,   leta,   lphi,   lx,   ly,   lz,   geta,   gphi]
+    position_features: [hit_eta, hit_phi]
+    node_scales:   [1000, 1000,  1000, 1,            1,          1,      1,      0.1,  1,    0.1,  1,      3.14]
+    num_events: [1200, 100,100]
+    use_csv: False
+    variable_with_prefix: false
+    points_per_batch: 80000
+    knn: [4,8]
+    sampling_ratio: [4,4]
+    weighting: 
+    - conditions:
+        track_particle_nhits:
+        - 3
+        - .inf
+        track_particle_pt:
+        - 900
+        - .inf
+      weight: 20.0
+    subsampling: random
+    batch_size: 1
+    num_workers: 16
+
+optimizer: 
+  class_path: torch.optim.AdamW
+  init_args:
+    lr: 0.001
+    betas: [0.9, 0.999]
+    eps: 1e-8
+    amsgrad: true
+
+lr_scheduler: 
+  class_path: torch.optim.lr_scheduler.StepLR
+  init_args:
+    step_size: 50
+    gamma: 0.9
+
+trainer:
+  accelerator: auto
+  devices: 1
+  num_nodes: 1
+  logger: 
+    - class_path: utils.loggers.wandb.WandbLogger
+      init_args:
+        stage_dir: /pscratch/sd/p/pmtuan/stage_dir/point_cloud_seg
+        project: RAndLANet_binary
+        group: "RandLANet-TargetWeight20_3layerMLP_EtaPhi_trackml_Test"
+        resume: allow
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args: 
+        logging_interval: epoch
+    - class_path: utils.callbacks.checkpoint.ModelCheckpointCallback
+      init_args: 
+        stage_dir: /pscratch/sd/p/pmtuan/stage_dir/point_cloud_seg
+        save_top_k: 1
+        monitor: valid_auroc
+        mode: max
+        save_last: true
+  max_epochs: 600
+  precision: 32
+
+

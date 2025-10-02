@@ -51,6 +51,7 @@ lr_scheduler:
     gamma: 0.97
 
 trainer:
+  stage_dir: /pscratch/sd/p/pmtuan/stage_dir/point_cloud_seg
   accelerator: auto
   devices: 1
   num_nodes: 1
@@ -71,6 +72,7 @@ trainer:
         monitor: valid_auroc
         mode: max
         save_last: true
+    - class_path: lightning.pytorch.callbacks.RichModelSummary
   max_epochs: 600
   precision: 32
 

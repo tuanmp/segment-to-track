@@ -31,11 +31,6 @@ class RandLANet(BasePointClassifier):
             num_classes=num_classes, batch_size=batch_size, *args, **kwargs
         )
 
-        # feature_dim = len(self.input_features)
-        # n_layers = self.hparams.get('n_layers', 1)
-
-        # d_in = self.hparams['d_in']
-
         rel_pos_dim = 1 + position_dim * 3
 
         self.feature_encoder = nn.Sequential(

@@ -1,3 +1,4 @@
 *__pycache__
 *.vscode
 *slurm_logs
+config.yaml

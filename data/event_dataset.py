@@ -79,13 +79,13 @@ class EventDataset(Dataset):
         graph = self.preprocess_graph(graph)
 
         if not self.use_csv:
-            return graph
+            return graph, self.evt_ids[idx]
 
         particles = pd.read_csv(f"{event_path}-particles.csv")
         hits = pd.read_csv(f"{event_path}-truth.csv")
         hits = self.preprocess_hits(hits, graph)
 
-        return graph, particles, hits
+        return graph, particles, hits, self.evt_ids[idx]
 
     def preprocess_graph(self, graph):
         """Preprocess the PyG graph before returning it."""
@@ -133,6 +133,7 @@ class EventDataset(Dataset):
                 if (f"{prefix}event{evt_id}-truth.csv" in all_files)
                 and (f"{prefix}event{evt_id}-particles.csv" in all_files)
             ]
+        print(f"Found {len(csv_event_ids)} events with CSV files.")
 
         pyg_event_ids = [
             evt_id

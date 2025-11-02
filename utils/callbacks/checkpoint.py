@@ -1,6 +1,4 @@
 import os
-from datetime import timedelta
-from typing import Literal
 
 import lightning as L
 
@@ -27,3 +25,9 @@ class ModelCheckpointCallback(L.pytorch.callbacks.ModelCheckpoint):
         )
 
         self.CHECKPOINT_NAME_LAST = f"last{suffix}"
+
+    # def on_validation_end(self, trainer: L.Trainer, pl_module: L.LightningModule):
+    #     super().on_validation_end(trainer, pl_module)
+
+    # if not self._should_skip_saving_checkpoint(trainer):
+    #     trainer.predict(pl_module, trainer.val_dataloaders)

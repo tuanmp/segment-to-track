@@ -30,7 +30,6 @@ class PointCloudDataset(EventDataset):
         **kwargs
     ):
 
-
         self.input_features = input_features
         self.position_features = position_features
         self.subsampling = subsampling
@@ -57,14 +56,17 @@ class PointCloudDataset(EventDataset):
 
     def get(self, idx):
 
-        event = super().get(idx)
+        data = super().get(idx)
 
         if self.use_csv:
-            event = event[0]
+            event = data[0]
+            event_idx = data[-1]
+        else:
+            event, event_idx = data
 
         hit_labels, hit_weights = self.get_hit_label(event)
 
-        features = list(set(self.input_features) - set(self.position_features))
+        features = sorted([f for f in self.input_features if f not in self.position_features] )
 
         features = self.gather_features(event, features)
 
@@ -74,7 +76,7 @@ class PointCloudDataset(EventDataset):
             self.points_per_batch, xyz, features, hit_labels, hit_weights
         )
 
-        if self.subsampling == "full":
+        if self.subsampling == "full" and self.points_per_batch > 0:
             start = 0
             end = start + self.points_per_batch
             data = []
@@ -121,6 +123,23 @@ class PointCloudDataset(EventDataset):
 
         sample_xyz, neigh_idxs, sub_idxs, interp_idxs, top_pc = self.subsample(xyz)
 
+        if self.stage == "predict":
+            self.unscale_features(event)
+            return (
+                sample_xyz,
+                neigh_idxs,
+                sub_idxs,
+                interp_idxs,
+                xyz,
+                features,
+                hit_labels,
+                hit_weights,
+                top_pc,
+                random_idx,
+                event_idx, 
+                event
+            )
+
         return (
             sample_xyz,
             neigh_idxs,
@@ -131,6 +150,7 @@ class PointCloudDataset(EventDataset):
             hit_labels,
             hit_weights,
             top_pc,
+            random_idx,
         )
 
     def subsample(self, pc):
@@ -214,14 +234,12 @@ class PointCloudDataset(EventDataset):
 
     @staticmethod
     def random_sample(n: int, *values: torch.Tensor):
-        if n == -1:
-            return values, torch.empty()
 
         N = values[0].shape[0]
 
         assert (
             N >= n
-        ), "The number of examples in the subsample must be less than the total number of examples"
+        ), f"The number of examples in the subsample {n} must be less than the total number of examples {N}"
 
         for v in values:
             assert (
@@ -232,12 +250,14 @@ class PointCloudDataset(EventDataset):
 
         idx = random_idx[:n]
 
+        if n == -1:
+            idx = random_idx
+
         return [v[idx] for v in values], idx, random_idx
 
     @staticmethod
     def sample_from_idx(idx: torch.Tensor, *values: torch.Tensor):
         return [v[idx] for v in values]
-
 
 class PointCloudDatasetGCN(PointCloudDataset):
     def get(self, idx):

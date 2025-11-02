@@ -2,3 +2,4 @@
 *.vscode
 *slurm_logs
 config.yaml
+*.ipynb_checkpoints

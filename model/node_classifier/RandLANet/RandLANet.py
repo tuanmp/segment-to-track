@@ -1,3 +1,4 @@
+import os
 import sys
 
 import torch
@@ -12,6 +13,17 @@ from ..base import BasePointClassifier
 from .modules import DilatedResidualBlock, make_mlp
 
 
+def to_device(obj, device):
+    if torch.is_tensor(obj):
+        return obj.to(device)
+    if isinstance(obj, dict):
+        return {k: to_device(v, device) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        t = [to_device(v, device) for v in obj]
+        return tuple(t) if isinstance(obj, tuple) else t
+    return obj
+
+
 class RandLANet(BasePointClassifier):
     def __init__(
         self,
@@ -24,12 +36,15 @@ class RandLANet(BasePointClassifier):
         num_classes: int,
         batch_size: int,
         do_compile: bool = False,
+        save_dir: str="./",
         *args: torch.Any,
         **kwargs: torch.Any
     ) -> None:
         super().__init__(
             num_classes=num_classes, batch_size=batch_size, *args, **kwargs
         )
+
+        self.save_hyperparameters()
 
         rel_pos_dim = 1 + position_dim * 3
 
@@ -80,6 +95,7 @@ class RandLANet(BasePointClassifier):
             self.loss_fn = nn.BCEWithLogitsLoss(reduction="none")
 
         self.do_compile = do_compile
+        self.save_dir = save_dir
 
     def configure_model(self) -> None:
         super().configure_model()
@@ -128,6 +144,8 @@ class RandLANet(BasePointClassifier):
             f_interp_i = self.nearest_interpolation(features, inter_idx)
             features = decoder(torch.cat([f_interp_i, f_encoder_i], dim=1))
 
+        interp_idxs.reverse()
+
         return features
 
     def forward(
@@ -137,6 +155,7 @@ class RandLANet(BasePointClassifier):
         neigh_idxs: list[Tensor],
         sub_idxs: list[Tensor],
         interp_idxs: list[Tensor],
+        return_fc_features: bool = False,
     ):
 
         features = features.permute(0, 2, 1)
@@ -157,9 +176,13 @@ class RandLANet(BasePointClassifier):
         features = self.decode(features, interp_idxs, f_encoder_list)
 
         # FC
+        fc_fetures = []
         for fc in self.fc_blocks:
             features = fc(features)
+            fc_fetures.append(features.clone().detach())
 
+        if return_fc_features:
+            return self.out_mlp(features), fc_fetures[-1]
         return self.out_mlp(features)
 
     @staticmethod
@@ -197,7 +220,7 @@ class RandLANet(BasePointClassifier):
         )
         return interpolated_features
 
-    def training_step(self, batch, batch_idx):
+    def common_evaluation(self, batch, return_fc_features: bool = False):
         (
             sample_xyz,
             neigh_idxs,
@@ -208,48 +231,91 @@ class RandLANet(BasePointClassifier):
             hit_labels,
             hit_weights,
             _,
+            _,
         ) = batch
 
-        output = self(features, sample_xyz, neigh_idxs, sub_idxs, interp_idxs)
+        output = self(features, sample_xyz, neigh_idxs, sub_idxs, interp_idxs, return_fc_features)
 
         if self.num_classes == 2:
-            output = output.squeeze(1)
-            hit_labels = hit_labels.to(output.dtype)
+            if type(output) is tuple:
+                output, fc_features = output
+                output = output.squeeze(1)
+                fc_features = fc_features.permute(0, 2, 1)
+                output = (output, fc_features)
+            else:
+                output = output.squeeze(1)
 
-        loss = torch.mean(self.loss_fn(output, hit_labels) * hit_weights)
+        return output, hit_labels, hit_weights
 
-        self.log_val("train_loss", loss, batch_size=self.batch_size)
+    def training_step(self, batch, batch_idx):
 
-        return loss
+        output, hit_labels, hit_weights = self.common_evaluation(batch)
+
+        loss = torch.mean(
+            self.loss_fn(output, hit_labels.to(output.dtype)) * hit_weights
+        )
+
+        return {"loss": loss, "output": output, "hit_labels": hit_labels}
+
+    def on_train_batch_end(
+        self, outputs: dict, batch: torch.Any, batch_idx: int
+    ) -> None:
+
+        self.log_val("train_loss", outputs["loss"], batch_size=self.batch_size)
 
     def validation_step(self, batch, batch_idx):
 
-        (
-            sample_xyz,
-            neigh_idxs,
-            sub_idxs,
-            interp_idxs,
-            xyz,
-            features,
-            hit_labels,
-            hit_weights,
-            _,
-        ) = batch
+        output, hit_labels, hit_weights = self.common_evaluation(batch)
 
-        output = self.forward(features, sample_xyz, neigh_idxs, sub_idxs, interp_idxs)
+        loss = torch.mean(
+            self.loss_fn(output, hit_labels.to(output.dtype)) * hit_weights
+        )
 
-        if self.num_classes == 2:
-            output = output.squeeze(1)
-            hit_labels = hit_labels.to(output.dtype)
+        return {"loss": loss, "output": output, "hit_labels": hit_labels}
 
-        loss = torch.mean(self.loss_fn(output, hit_labels) * hit_weights)
+    def on_validation_batch_end(
+        self, outputs: dict, batch: torch.Any, batch_idx: int, dataloader_idx: int = 0
+    ) -> None:
 
-        self.log_val("val_loss", loss, batch_size=self.batch_size)
+        self.log_val("val_loss", outputs["loss"], batch_size=self.batch_size)
 
-        metrics = self.metrics(output, hit_labels)
+        self.metrics.update(outputs["output"], outputs["hit_labels"])
 
-        return metrics
+    def test_step(self, batch, batch_idx):
 
+        output, hit_labels, _ = self.common_evaluation(batch)
+
+        return {"output": torch.sigmoid(output), "hit_labels": hit_labels}
+
+    def on_test_batch_end(
+        self, outputs: dict, batch: torch.Any, batch_idx: int, dataloader_idx: int = 0
+    ) -> None:
+
+        self.metrics.update(1 - outputs["output"], 1 - outputs["hit_labels"])
+
+    def predict_step(self, batch, batch_idx, dataloader_idx: int = 0):
+        
+        # here, beside returning the prediction, we need to 
+        # rearrange the output to match original order of hits in the event
+        event_batch, events, event_idxs = batch
+
+        random_idx = event_batch[-1].squeeze()  # get the random idxs used in dataloader
+        reco_idx = torch.empty_like(random_idx)
+
+        reco_idx[random_idx] = torch.arange(0, random_idx.shape[0], device=random_idx.device)
+        
+        outputs, hit_labels, _ = self.common_evaluation(event_batch, return_fc_features=True)
+
+        output, fc_features = outputs
+
+        output_reco = output.squeeze()[reco_idx.to(output.device)]
+        hit_labels = 1-hit_labels.squeeze()[reco_idx.to(hit_labels.device)]
+
+        hit_score = 1-torch.sigmoid(output_reco)
+
+        fc_features_reco = fc_features.squeeze()[reco_idx.to(fc_features.device)]
+
+        return {"output": hit_score, "hit_labels": hit_labels, "fc_features": fc_features_reco}
 
 class RandLAGCN(RandLANet):
     def __init__(self, hparams, *args: torch.Any, **kwargs: torch.Any) -> None:
@@ -290,7 +356,6 @@ class RandLAGCN(RandLANet):
 
         features = features.permute(0, 2, 1)
         features = self.feature_encoder(features)  # batch * channel * npoints
-        # f_encoder_list = []
 
         # ### encoding
         features, f_encoder_list = self.encode(
@@ -395,8 +460,7 @@ class PointSegMLP(RandLANet):
 
         self.feature_encoder = make_mlp(
             feature_dim, fc_in, n_layers
-        )  # nn.Sequential(nn.Conv1d(feature_dim, d_in, kernel_size=(1,)), nn.BatchNorm1d(d_in), nn.LeakyReLU())
-
+        )  
         self.fc_blocks = nn.ModuleList()
         for fc_conf in self.hparams["fc_blocks"]:
             fc_out = fc_conf["d_out"]
@@ -421,9 +485,7 @@ class PointSegMLP(RandLANet):
     ):
 
         features = features.permute(0, 2, 1)
-        # xyz = global_xyz[0].permute(0,2,1)
 
-        # features = torch.concat([features, xyz], dim=1)
         features = self.feature_encoder(features)  # batch * channel * npoints
 
         # FC
@@ -505,4 +567,5 @@ if __name__ == "__main__":
 
         i += 1
         if i >= 1:
+            break
             break

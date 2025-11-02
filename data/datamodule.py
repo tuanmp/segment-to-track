@@ -1,9 +1,24 @@
 import logging
 
 import lightning as L
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, default_collate
 
 from .point_classifier_dataset import PointCloudDataset
+
+
+def predict_collate_fn(batch):
+
+    to_default_collate = [
+        batch[i][:-2] for i in range(len(batch))
+    ]
+
+    events = [batch[i][-1] for i in range(len(batch))]
+    event_idxs = [batch[i][-2] for i in range(len(batch))]
+
+    default_collated = default_collate(to_default_collate)
+
+    return default_collated, event_idxs, events
+
 
 
 class PointCloudDataModule(L.LightningDataModule):
@@ -67,20 +82,28 @@ class PointCloudDataModule(L.LightningDataModule):
 
             setattr(self, dataset_name, dataset)
         
-        logging.info(
-            f"Loaded {len(self.trainset)} training events,"
-            f" {len(self.valset)} validation events and {len(self.testset)} testing"
-            " events"
-        )
-    
-    def _dataloader(self, dataset, shuffle=False) -> DataLoader:
-        return DataLoader(
-            getattr(self, dataset),
-            batch_size=self.batch_size,
-            num_workers=self.num_workers,
-            drop_last=True,
-            shuffle=shuffle,
-        )
+    def _dataloader(self, dataset, shuffle=False, collate_fn=None) -> DataLoader:
+        if collate_fn is not None:
+        
+            return DataLoader(
+                getattr(self, dataset),
+                batch_size=self.batch_size,
+                num_workers=self.num_workers,
+                drop_last=True,
+                shuffle=shuffle,
+                collate_fn=collate_fn
+            )
+        
+        else:
+
+            return DataLoader(
+                getattr(self, dataset),
+                batch_size=self.batch_size,
+                num_workers=self.num_workers,
+                drop_last=True,
+                shuffle=shuffle
+            )
+
 
     def train_dataloader(self):
         return self._dataloader('trainset', True)
@@ -93,9 +116,9 @@ class PointCloudDataModule(L.LightningDataModule):
     
     def predict_dataloader(self):
         return [
-            self.train_dataloader(),
-            self.val_dataloader(),
-            self.test_dataloader()
+            self._dataloader("trainset", collate_fn=predict_collate_fn),
+            self._dataloader("valset", collate_fn=predict_collate_fn),
+            self._dataloader("testset", collate_fn=predict_collate_fn)
         ]
 
 

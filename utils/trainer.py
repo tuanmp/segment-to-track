@@ -27,7 +27,10 @@ class Trainer(L.Trainer):
 
         default_root_dir = get_default_root_dir(stage_dir)
 
-        os.makedirs(default_root_dir, exist_ok=True)
+        if kwargs.get("fast_dev_run"):
+            default_root_dir = "/tmp"
+        else:
+            os.makedirs(default_root_dir, exist_ok=True)
 
         logging.info(f"Setting default root dir: {default_root_dir}")
 

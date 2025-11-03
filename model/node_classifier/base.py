@@ -225,6 +225,8 @@ class BasePointClassifier(L.LightningModule):
 
     def on_test_epoch_end(self) -> None:
 
+        print("Generating test ROC and Precision-Recall curves...")
+
         metrics = self.metrics.compute()
 
         figsize = (6, 5)
@@ -232,6 +234,7 @@ class BasePointClassifier(L.LightningModule):
         if self.trainer is not None:
             save_dir = self.trainer.default_root_dir
 
+        print("Plotting ROC curve ...")
         # plot ROC curve
         fpr, tpr, threshold = metrics['roc']
         fig, ax = plt.subplots(figsize=figsize)
@@ -250,11 +253,12 @@ class BasePointClassifier(L.LightningModule):
         plt.close()
 
         # plot precision-recall curve
+        print("Plotting Precision-Recall curve ...")
         precision, recall, thresholds = metrics['precision_recall']
         fig, ax = plt.subplots(figsize=figsize)
         # self.metrics["precision_recall"].plot(ax=ax)
         ax.plot(recall.cpu().numpy(), precision.cpu().numpy(), label="Precision-Recall curve")
-        ax.plot([0.99], [metrics['precision_@99pct_recall'][0].cpu().item()], marker='o', markersize=5, label=f'Precision @99pct Recall: {metrics["precision_@99pct_recall"][0].cpu():.2f}')
+        ax.plot([0.99], [metrics['precision_@99pct_recall'][0].cpu().item()], marker='o', markersize=5, label=f'Precision @99pct Recall: {metrics["precision_@99pct_recall"][0].cpu():.2f}\n Score threshold: {metrics["precision_@99pct_recall"][1].cpu():.2f}')
         ax.grid(True, linestyle="--", linewidth=1)
         ax.legend()
         ax.set_xlabel("Recall")

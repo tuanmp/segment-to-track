@@ -77,7 +77,6 @@ class EventDataset(Dataset):
         graph = torch.load(graph_path, weights_only=False)
 
         graph = self.preprocess_graph(graph)
-
         if not self.use_csv:
             return graph, self.evt_ids[idx]
 
@@ -133,7 +132,6 @@ class EventDataset(Dataset):
                 if (f"{prefix}event{evt_id}-truth.csv" in all_files)
                 and (f"{prefix}event{evt_id}-particles.csv" in all_files)
             ]
-        print(f"Found {len(csv_event_ids)} events with CSV files.")
 
         pyg_event_ids = [
             evt_id

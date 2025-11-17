@@ -20,7 +20,6 @@ def predict_collate_fn(batch):
     return default_collated, event_idxs, events
 
 
-
 class PointCloudDataModule(L.LightningDataModule):
 
     def __init__(
@@ -28,8 +27,9 @@ class PointCloudDataModule(L.LightningDataModule):
         input_dir,
         input_features,
         position_features,
-        num_events: list[int]=[1,1,1],
-        use_csv: bool=False,
+        node_features,
+        num_events: list[int] = [1, 1, 1],
+        use_csv: bool = False,
         event_prefix="",
         variable_with_prefix: bool = False,
         node_scales: list[float] = [],
@@ -38,8 +38,9 @@ class PointCloudDataModule(L.LightningDataModule):
         sampling_ratio: list[int] = [],
         weighting: list[dict] = [{}],
         subsampling="random",
-        batch_size: int=2,
-        num_workers: int=16,
+        batch_size: int = 2,
+        num_workers: int = 16,
+        augment_phi: bool = False,
     ):
         super().__init__()
 
@@ -58,13 +59,20 @@ class PointCloudDataModule(L.LightningDataModule):
         self.subsampling = subsampling
         self.batch_size=batch_size
         self.num_workers=num_workers
-    
+        self.node_features = node_features
+        self.augment_phi = augment_phi
+
     def setup(self, stage: str) -> None:
-        
+
+        augment_phi = False if stage in ["predict", "test"] else self.augment_phi
+        if self.augment_phi and not augment_phi:
+            print(f"Requested phi augmentation but not doing it in {stage} stage")
+
         for dataset_name, num_events in zip(['trainset', 'valset', 'testset'], self.num_events):
             dataset = PointCloudDataset(
                 self.input_dir,
                 self.input_features,
+                self.node_features,
                 self.position_features,
                 dataset_name,
                 num_events,
@@ -77,14 +85,15 @@ class PointCloudDataModule(L.LightningDataModule):
                 self.sampling_ratio,
                 self.weighting,
                 stage,
-                subsampling=self.subsampling
+                subsampling=self.subsampling,
+                augment_phi=augment_phi,
             )
 
             setattr(self, dataset_name, dataset)
-        
+
     def _dataloader(self, dataset, shuffle=False, collate_fn=None) -> DataLoader:
         if collate_fn is not None:
-        
+
             return DataLoader(
                 getattr(self, dataset),
                 batch_size=self.batch_size,
@@ -93,7 +102,7 @@ class PointCloudDataModule(L.LightningDataModule):
                 shuffle=shuffle,
                 collate_fn=collate_fn
             )
-        
+
         else:
 
             return DataLoader(
@@ -104,22 +113,18 @@ class PointCloudDataModule(L.LightningDataModule):
                 shuffle=shuffle
             )
 
-
     def train_dataloader(self):
         return self._dataloader('trainset', True)
-    
+
     def val_dataloader(self):
         return self._dataloader("valset")
 
     def test_dataloader(self):
         return self._dataloader("testset")
-    
+
     def predict_dataloader(self):
         return [
             self._dataloader("trainset", collate_fn=predict_collate_fn),
             self._dataloader("valset", collate_fn=predict_collate_fn),
             self._dataloader("testset", collate_fn=predict_collate_fn)
         ]
-
-
-        

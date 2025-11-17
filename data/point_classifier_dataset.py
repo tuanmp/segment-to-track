@@ -1,16 +1,20 @@
 import torch
+from torch_geometric.data import Data
 
+from utils.loading_utils import add_variable_name_prefix_in_config
 from utils.point_utils import knn_search
 
 from .event_dataset import EventDataset
 from .utils import handle_weighting
 
-
+PI = 3.14159
 class PointCloudDataset(EventDataset):
+
     def __init__(
         self,
         input_dir,
         input_features,
+        node_features,
         position_features,
         data_name: str = "",
         num_events=None,
@@ -27,7 +31,8 @@ class PointCloudDataset(EventDataset):
         pre_transform=None,
         pre_filter=None,
         subsampling="random",
-        **kwargs
+        augment_phi: bool = False,
+        **kwargs,
     ):
 
         self.input_features = input_features
@@ -37,6 +42,14 @@ class PointCloudDataset(EventDataset):
         self.knn = knn
         self.sampling_ratio = sampling_ratio
         self.weighting = weighting
+        self.augment_phi = augment_phi
+        if not variable_with_prefix:
+            self.input_features = add_variable_name_prefix_in_config(
+                {"node_features": self.input_features}
+            )["node_features"]
+            self.position_features = add_variable_name_prefix_in_config(
+                {"node_features": self.position_features}
+            )["node_features"]
 
         super().__init__(
             input_dir,
@@ -45,13 +58,13 @@ class PointCloudDataset(EventDataset):
             use_csv,
             event_prefix,
             variable_with_prefix,
-            self.input_features,
+            node_features,
             node_scales,
             stage,
             transform,
             pre_transform,
             pre_filter,
-            **kwargs
+            **kwargs,
         )
 
     def get(self, idx):
@@ -63,6 +76,13 @@ class PointCloudDataset(EventDataset):
             event_idx = data[-1]
         else:
             event, event_idx = data
+
+        # augment phi
+        if self.augment_phi:
+            self._augment_phi(event)
+
+        # transform phi
+        self._transform_phi(event)
 
         hit_labels, hit_weights = self.get_hit_label(event)
 
@@ -176,6 +196,22 @@ class PointCloudDataset(EventDataset):
             pc = sub_points
 
         return global_xyz, neigh_idxs, sub_idxs, interp_idxs, pc
+
+    @staticmethod
+    def _transform_phi(graph: Data):
+        # assume that phi is given in multiple of pi, i.e. -1 < phi < 1
+        graph["hit_sin_phi"] = torch.sin(graph["hit_phi"] * PI)
+        graph["hit_cos_phi"] = torch.cos(graph["hit_phi"] * PI)
+
+    @staticmethod
+    def _augment_phi(graph: Data):
+        # assume that hit_phi is in the graph
+        # assume that phi is given in multiple of pi, i.e. -1 < phi < 1
+        # augment phi by a value evenly distributed, -1 < delta phi < 1
+        # recompute hit_x and hit_y
+        graph.hit_phi = graph.hit_phi + torch.rand(1) * 2
+        graph.hit_x = graph.hit_r * torch.cos(graph.hit_phi * PI)
+        graph.hit_y = graph.hit_r * torch.sin(graph.hit_phi * PI)
 
     def get_hit_label(self, event):
 

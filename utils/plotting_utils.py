@@ -14,13 +14,16 @@
 
 
 from typing import List
-import numpy as np
+
 import matplotlib.pyplot as plt
-
-import torch
+import numpy as np
 import scipy
-
 import seaborn as sns
+import torch
+
+
+def plot_hit_efficiency():
+    pass
 
 
 def clopper_pearson(passed: float, total: float, level: float = 0.68):
@@ -50,7 +53,6 @@ def get_ratio(passed: List[int], total: List[int]):
     res = np.array([x / y if y != 0 else 0.0 for x, y in zip(passed, total)])
     error = np.array([clopper_pearson(x, y) for x, y in zip(passed, total)]).T
     return res, error
-
 
 def plot_eff_pur_region(
     edge_truth, edge_positive, edge_regions, node_r, node_z, node_regions, plot_config

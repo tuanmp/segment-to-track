@@ -3,7 +3,7 @@ import logging
 import lightning as L
 from torch.utils.data import DataLoader, default_collate
 
-from .point_classifier_dataset import PointCloudDataset
+from .point_classifier_dataset import PointCloudDataset, PointCloudDatasetMetricLearning
 
 
 def predict_collate_fn(batch):
@@ -91,27 +91,18 @@ class PointCloudDataModule(L.LightningDataModule):
 
             setattr(self, dataset_name, dataset)
 
-    def _dataloader(self, dataset, shuffle=False, collate_fn=None) -> DataLoader:
-        if collate_fn is not None:
+    def _dataloader(
+        self, dataset, shuffle=False, collate_fn=default_collate
+    ) -> DataLoader:
 
-            return DataLoader(
-                getattr(self, dataset),
-                batch_size=self.batch_size,
-                num_workers=self.num_workers,
-                drop_last=True,
-                shuffle=shuffle,
-                collate_fn=collate_fn
-            )
-
-        else:
-
-            return DataLoader(
-                getattr(self, dataset),
-                batch_size=self.batch_size,
-                num_workers=self.num_workers,
-                drop_last=True,
-                shuffle=shuffle
-            )
+        return DataLoader(
+            getattr(self, dataset),
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            drop_last=True,
+            shuffle=shuffle,
+            collate_fn=collate_fn,
+        )
 
     def train_dataloader(self):
         return self._dataloader('trainset', True)
@@ -120,7 +111,7 @@ class PointCloudDataModule(L.LightningDataModule):
         return self._dataloader("valset")
 
     def test_dataloader(self):
-        return self._dataloader("testset")
+        return self._dataloader("testset", collate_fn=predict_collate_fn)
 
     def predict_dataloader(self):
         return [
@@ -128,3 +119,43 @@ class PointCloudDataModule(L.LightningDataModule):
             self._dataloader("valset", collate_fn=predict_collate_fn),
             self._dataloader("testset", collate_fn=predict_collate_fn)
         ]
+
+
+class PointCloudMetricLearningDataModule(PointCloudDataModule):
+
+    def setup(self, stage: str) -> None:
+
+        augment_phi = False if stage in ["predict", "test"] else self.augment_phi
+        if self.augment_phi and not augment_phi:
+            print(f"Requested phi augmentation but not doing it in {stage} stage")
+
+        for dataset_name, num_events in zip(
+            ["trainset", "valset", "testset"], self.num_events
+        ):
+            dataset = PointCloudDatasetMetricLearning(
+                self.input_dir,
+                self.input_features,
+                self.node_features,
+                self.position_features,
+                dataset_name,
+                num_events,
+                self.use_csv,
+                self.event_prefix,
+                self.variable_with_prefix,
+                self.node_scales,
+                self.points_per_batch,
+                self.knn,
+                self.sampling_ratio,
+                self.weighting,
+                stage,
+                subsampling=self.subsampling,
+                augment_phi=augment_phi,
+            )
+
+            setattr(self, dataset_name, dataset)
+
+    def _dataloader(
+        self, dataset, shuffle=False, collate_fn=predict_collate_fn
+    ) -> DataLoader:
+
+        return super()._dataloader(dataset, shuffle, collate_fn)

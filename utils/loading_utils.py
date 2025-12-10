@@ -362,6 +362,8 @@ variable_name_prefix_map = {
     "z": "hit_z",
     "r": "hit_r",
     "phi": "hit_phi",
+    "sin_phi": "hit_sin_phi",
+    "cos_phi": "hit_cos_phi",
     "eta": "hit_eta",
     "region": "hit_region",
     "module_id": "hit_module_id",

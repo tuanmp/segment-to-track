@@ -22,9 +22,10 @@ from utils.mapping_utils import VariableType, get_variable_type
 from utils.version_utils import get_pyg_data_keys
 
 
-def build_signal_edges(event, weighting_config, true_edges):
+def get_signal_mask(event, config, true_edges):
+
     signal_mask = torch.zeros_like(true_edges[0], dtype=torch.bool)
-    for weight_spec in weighting_config:
+    for weight_spec in config:
         if not weight_spec["conditions"]["edge_y"] or weight_spec["weight"] <= 0.0:
             continue
         # Copy weight_spec but remove the y condition
@@ -34,6 +35,12 @@ def build_signal_edges(event, weighting_config, true_edges):
         signal_mask |= get_weight_mask(
             event, true_edges, yless_weight_spec["conditions"]
         )
+    return signal_mask
+
+
+def build_signal_edges(event, weighting_config, true_edges):
+    signal_mask = get_signal_mask(event, weighting_config, true_edges)
+
     return true_edges[:, signal_mask]
 
 

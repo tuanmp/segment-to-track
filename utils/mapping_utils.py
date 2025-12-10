@@ -21,6 +21,26 @@ from torch_scatter import scatter
 from .version_utils import get_pyg_data_keys
 
 
+def rearrange_by_distance(event, edge_index):
+    if "hit_R" not in get_pyg_data_keys(event):
+        warnings.warn(
+            "hit_R not found in the event, calculating it from hit_r and hit_z"
+        )
+        assert "hit_r" in get_pyg_data_keys(event) and "hit_z" in get_pyg_data_keys(
+            event
+        ), "event must contain R or contain r and z"
+        event.hit_R = event.hit_r**2 + event.hit_z**2
+
+    # flip edges that are pointing inward
+    edge_mask = (event.hit_R[edge_index[0]] > event.hit_R[edge_index[1]]) | (
+        (event.hit_R[edge_index[0]] == event.hit_R[edge_index[1]])
+        & (edge_index[0] > edge_index[1])
+    )
+    edge_index[:, edge_mask] = edge_index[:, edge_mask].flip(0)
+
+    return edge_index
+
+
 def get_condition_lambda(condition_key, condition_val):
     condition_dict = {
         "is": lambda event: event[condition_key] == condition_val,
@@ -375,4 +395,5 @@ def get_directed_prediction(event: Data, edge_pred, edge_index):
             event.passing_edge_mask_loose = torch.any(paired_pred, dim=1)
         elif matching == "tight":
             event.passing_edge_mask_tight = torch.all(paired_pred, dim=1)
+    # print(event.passing_edge_mask_loose, event.passing_edge_mask_tight)
     # print(event.passing_edge_mask_loose, event.passing_edge_mask_tight)

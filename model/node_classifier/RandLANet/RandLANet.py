@@ -7,10 +7,10 @@ from torch import Tensor, nn
 from torch_geometric.nn import conv
 
 from utils.loading_utils import add_variable_name_prefix_in_config
-from utils.point_utils import gather_neighbor
+from utils.point_utils import gather_neighbor, knn_search
 
 from ..base import BasePointClassifier
-from .modules import DilatedResidualBlock, make_mlp
+from .modules import DilatedResidualBlock, linear_mlp, make_mlp
 
 
 def to_device(obj, device):
@@ -25,6 +25,7 @@ def to_device(obj, device):
 
 
 class RandLANet(BasePointClassifier):
+
     def __init__(
         self,
         feature_dim: int,
@@ -36,9 +37,8 @@ class RandLANet(BasePointClassifier):
         num_classes: int,
         batch_size: int,
         do_compile: bool = False,
-        save_dir: str="./",
-        *args: torch.Any,
-        **kwargs: torch.Any
+        *args,
+        **kwargs,
     ) -> None:
         super().__init__(
             num_classes=num_classes, batch_size=batch_size, *args, **kwargs
@@ -95,7 +95,6 @@ class RandLANet(BasePointClassifier):
             self.loss_fn = nn.BCEWithLogitsLoss(reduction="none")
 
         self.do_compile = do_compile
-        self.save_dir = save_dir
 
     def configure_model(self) -> None:
         super().configure_model()
@@ -238,10 +237,14 @@ class RandLANet(BasePointClassifier):
 
         if self.num_classes == 2:
             if type(output) is tuple:
-                output, fc_features = output
-                output = output.squeeze(1)
-                fc_features = fc_features.permute(0, 2, 1)
-                output = (output, fc_features)
+                logits = output[0]
+                logits = logits.squeeze(1)
+                if return_fc_features:
+                    fc_features = output[1]
+                    fc_features = fc_features.permute(0, 2, 1)
+                    output = (logits, fc_features, *output[2:])
+                else:
+                    output = (logits, *output[1:])
             else:
                 output = output.squeeze(1)
 
@@ -257,12 +260,6 @@ class RandLANet(BasePointClassifier):
 
         return {"loss": loss, "output": output, "hit_labels": hit_labels}
 
-    def on_train_batch_end(
-        self, outputs: dict, batch: torch.Any, batch_idx: int
-    ) -> None:
-
-        self.log_val("train_loss", outputs["loss"], batch_size=self.batch_size)
-
     def validation_step(self, batch, batch_idx):
 
         output, hit_labels, hit_weights = self.common_evaluation(batch)
@@ -273,37 +270,28 @@ class RandLANet(BasePointClassifier):
 
         return {"loss": loss, "output": output, "hit_labels": hit_labels}
 
-    def on_validation_batch_end(
-        self, outputs: dict, batch: torch.Any, batch_idx: int, dataloader_idx: int = 0
-    ) -> None:
-
-        self.log_val("val_loss", outputs["loss"], batch_size=self.batch_size)
-
-        self.metrics.update(outputs["output"], outputs["hit_labels"])
-
     def test_step(self, batch, batch_idx):
 
-        output, hit_labels, _ = self.common_evaluation(batch)
+        event_batch, event_idxs, events = batch
 
-        return {"output": torch.sigmoid(output), "hit_labels": hit_labels}
+        output, hit_labels, _ = self.common_evaluation(event_batch)
 
-    def on_test_batch_end(
-        self, outputs: dict, batch: torch.Any, batch_idx: int, dataloader_idx: int = 0
-    ) -> None:
-
-        self.metrics.update(1 - outputs["output"], 1 - outputs["hit_labels"])
+        return {
+            "output": torch.sigmoid(output).squeeze(),
+            "hit_labels": hit_labels.squeeze(),
+        }
 
     def predict_step(self, batch, batch_idx, dataloader_idx: int = 0):
-        
-        # here, beside returning the prediction, we need to 
+
+        # here, beside returning the prediction, we need to
         # rearrange the output to match original order of hits in the event
-        event_batch, events, event_idxs = batch
+        event_batch, event_idxs, events = batch
 
         random_idx = event_batch[-1].squeeze()  # get the random idxs used in dataloader
         reco_idx = torch.empty_like(random_idx)
 
         reco_idx[random_idx] = torch.arange(0, random_idx.shape[0], device=random_idx.device)
-        
+
         outputs, hit_labels, _ = self.common_evaluation(event_batch, return_fc_features=True)
 
         output, fc_features = outputs
@@ -317,8 +305,33 @@ class RandLANet(BasePointClassifier):
 
         return {"output": hit_score, "hit_labels": hit_labels, "fc_features": fc_features_reco}
 
+    def subsample(self, pc):
+
+        global_xyz, neigh_idxs, sub_idxs, interp_idxs = [], [], [], []
+
+        assert len(self.knn) == len(
+            self.sampling_ratio
+        ), "The number of KNN samples must be the same as the number of sampling ratio"
+
+        for num_neigh, sampling_ratio in zip(self.knn, self.sampling_ratio):
+            neigh_idx = knn_search(pc, pc, num_neigh + 1, engine=self.knn_engine)
+            neigh_idx = neigh_idx[:, 1:]  # eliminate self-loop
+            sub_points, idx, _ = self.random_sample(pc.shape[0] // sampling_ratio, pc)
+            sub_points = sub_points[0]
+            pool_idx = neigh_idx[idx, :]
+            interp_idx = knn_search(sub_points, pc, 1, engine=self.knn_engine)
+            global_xyz.append(pc)
+            neigh_idxs.append(neigh_idx)
+            sub_idxs.append(pool_idx)
+            interp_idxs.append(interp_idx)
+            pc = sub_points
+
+        return global_xyz, neigh_idxs, sub_idxs, interp_idxs, pc
+
+
 class RandLAGCN(RandLANet):
-    def __init__(self, hparams, *args: torch.Any, **kwargs: torch.Any) -> None:
+
+    def __init__(self, hparams, *args, **kwargs) -> None:
         super().__init__(hparams, *args, **kwargs)
 
         self.graph_convs = nn.ModuleList()
@@ -438,7 +451,7 @@ class RandLAGCN(RandLANet):
             "val_loss",
             loss,
             on_epoch=True,
-            on_step=False,
+            on_step=True,
             prog_bar=True,
             batch_size=self.hparams["batch_size"],
         )
@@ -446,53 +459,6 @@ class RandLAGCN(RandLANet):
         metrics = self.metrics(output, hit_labels)
 
         return metrics
-
-
-class PointSegMLP(RandLANet):
-    def __init__(self, hparams, *args: torch.Any, **kwargs: torch.Any) -> None:
-        super().__init__(hparams, *args, **kwargs)
-
-        feature_dim = len(self.input_features)  # + len(self.position_features)
-
-        n_layers = self.hparams.get("n_layers", 1)
-
-        fc_in = self.hparams["d_in"]
-
-        self.feature_encoder = make_mlp(
-            feature_dim, fc_in, n_layers
-        )  
-        self.fc_blocks = nn.ModuleList()
-        for fc_conf in self.hparams["fc_blocks"]:
-            fc_out = fc_conf["d_out"]
-            self.fc_blocks.append(make_mlp(fc_in, fc_out, n_layers, dim="1d"))
-            fc_in = fc_out
-
-        self.out_mlp = nn.Conv1d(
-            fc_in,
-            1 if self.hparams["num_class"] == 2 else self.hparams["num_class"],
-            kernel_size=(1,),
-        )
-
-        del self.dilated_res_blocks, self.decoder_blocks, self.decoder_mlp
-
-    def forward(
-        self,
-        features: Tensor,
-        global_xyz: list[Tensor],
-        neigh_idxs: list[Tensor],
-        sub_idxs: list[Tensor],
-        interp_idxs: list[Tensor],
-    ):
-
-        features = features.permute(0, 2, 1)
-
-        features = self.feature_encoder(features)  # batch * channel * npoints
-
-        # FC
-        for fc in self.fc_blocks:
-            features = fc(features)
-
-        return self.out_mlp(features)
 
 
 if __name__ == "__main__":

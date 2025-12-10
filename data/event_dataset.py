@@ -147,27 +147,6 @@ class EventDataset(Dataset):
 
         return all_event_ids
 
-    # def apply_hard_cuts(self, event, passing_hit_ids=None):
-    #     """
-    #     Apply hard cuts to the event. This is implemented by
-    #     1. Finding which true edges are from tracks that pass the hard cut.
-    #     2. Pruning the input graph to only include nodes that are connected to these edges.
-    #     """
-
-    #     if (
-    #         self.hparams is not None
-    #         and "hard_cuts" in self.hparams.keys()
-    #         and self.hparams["hard_cuts"]
-    #     ):
-    #         assert isinstance(
-    #             self.hparams["hard_cuts"], dict
-    #         ), "Hard cuts must be a dictionary"
-    #         event = handle_hard_node_cuts(
-    #             event, self.hparams["hard_cuts"], passing_hit_ids
-    #         )
-
-    #     return event
-
     def scale_features(self, graph):
         """
         Handle feature scaling for the graph

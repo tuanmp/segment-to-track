@@ -1,4 +1,3 @@
-
 import torch
 from torch import Tensor, nn
 
@@ -20,6 +19,23 @@ def make_mlp(d_in: int, d_out: int, n_layers: int = 1, act_out=True, dim="1d"):
     modules.append(bn_module(d_out))
     if act_out:
         modules.append(nn.LeakyReLU())
+
+    return nn.Sequential(*modules)
+
+
+def linear_mlp(d_in: int, d_out: int, n_layers: int = 1, act_out=True, layernorm=True):
+
+    modules = []
+    if layernorm:
+        modules.append(nn.LayerNorm(d_in))
+
+    for _ in range(n_layers):
+        modules.append(nn.Linear(d_in, d_out))
+        modules.append(nn.LeakyReLU())
+        d_in = d_out
+
+    if not act_out:
+        modules.pop()
 
     return nn.Sequential(*modules)
 
@@ -82,6 +98,20 @@ class AttentivePooling(nn.Module):
         point_output = self.mlp(aggregate)
 
         return point_output.squeeze(-1)  # batch * d_out  * (npoints)
+
+
+class MultiHeadAttentivePooling(nn.Module):
+
+    def __init__(
+        self,
+        d_in: int,
+        d_out: int,
+        n_layers: int = 1,
+        n_heads: int = 1,
+        *args,
+        **kwargs
+    ) -> None:
+        super().__init__(*args, **kwargs)
 
 
 class DilatedResidualBlock(nn.Module):

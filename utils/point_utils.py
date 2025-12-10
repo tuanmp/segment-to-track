@@ -5,20 +5,20 @@ from torch_geometric.nn.pool import knn
 
 def knn_search(db, query, N, engine="torch", return_edge_index=False):
 
-    assert engine in ["torch"], f"Unknown engine {engine}"
+    assert engine in ["torch", "fastgraph"], f"Unknown engine {engine}"
+
+    def torch_knn(db, query, N, return_edge_index):
+        idx = knn(db, query, N)
+        if return_edge_index:
+            return idx
+        return idx[1].reshape(query.shape[0], N)
 
     match engine:
         case "torch":
-            idx = knn(db, query, N) # return index with shape 2 * (n_query * N), [[query_idx], [dst_idx]]
-            if return_edge_index:
-                return idx
-            return idx[1].reshape(query.shape[0], N)
-        
+            return torch_knn(db, query, N, return_edge_index)
+
         case _:
-            idx = knn(db, query, N) # return index with shape 2 * (n_query * N), [[query_idx], [dst_idx]]
-            if return_edge_index: 
-                return idx
-            return idx[1].reshape(query.shape[0], N)
+            return torch_knn(db, query, N, return_edge_index)
 
 
 def gather_neighbor(pc: Tensor, neighbor_idx: Tensor):

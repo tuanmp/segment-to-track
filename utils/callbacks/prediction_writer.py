@@ -3,7 +3,6 @@ import shutil
 
 import lightning as L
 import torch
-from genericpath import isfile
 
 
 class PredictionWriter(L.pytorch.callbacks.BasePredictionWriter):
@@ -77,11 +76,3 @@ class PredictionWriter(L.pytorch.callbacks.BasePredictionWriter):
     #             if os.path.isdir(path):
     #                 shutil.rmtree(path)
     #     return
-    
-    
-
-
-
-
-
-

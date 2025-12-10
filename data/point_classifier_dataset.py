@@ -1,11 +1,12 @@
 import torch
 from torch_geometric.data import Data
 
+from model.utils import get_signal_mask
 from utils.loading_utils import add_variable_name_prefix_in_config
 from utils.point_utils import knn_search
 
 from .event_dataset import EventDataset
-from .utils import handle_weighting
+from .utils import get_weight_mask, handle_weighting
 
 PI = 3.14159
 class PointCloudDataset(EventDataset):
@@ -32,6 +33,7 @@ class PointCloudDataset(EventDataset):
         pre_filter=None,
         subsampling="random",
         augment_phi: bool = False,
+        knn_engine="torch",
         **kwargs,
     ):
 
@@ -43,6 +45,7 @@ class PointCloudDataset(EventDataset):
         self.sampling_ratio = sampling_ratio
         self.weighting = weighting
         self.augment_phi = augment_phi
+        self.knn_engine = knn_engine
         if not variable_with_prefix:
             self.input_features = add_variable_name_prefix_in_config(
                 {"node_features": self.input_features}
@@ -143,7 +146,7 @@ class PointCloudDataset(EventDataset):
 
         sample_xyz, neigh_idxs, sub_idxs, interp_idxs, top_pc = self.subsample(xyz)
 
-        if self.stage == "predict":
+        if self.stage in ["predict", "test"]:
             self.unscale_features(event)
             return (
                 sample_xyz,
@@ -184,11 +187,12 @@ class PointCloudDataset(EventDataset):
         for num_neigh, sampling_ratio in zip(
             self.knn, self.sampling_ratio
         ):
-            neigh_idx = knn_search(pc, pc, num_neigh)
+            neigh_idx = knn_search(pc, pc, num_neigh + 1, engine=self.knn_engine)
+            neigh_idx = neigh_idx[:, 1:]  # eliminate self-loop
             sub_points, idx, _ = self.random_sample(pc.shape[0] // sampling_ratio, pc)
             sub_points = sub_points[0]
             pool_idx = neigh_idx[idx, :]
-            interp_idx = knn_search(sub_points, pc, 1)
+            interp_idx = knn_search(sub_points, pc, 1, engine=self.knn_engine)
             global_xyz.append(pc)
             neigh_idxs.append(neigh_idx)
             sub_idxs.append(pool_idx)
@@ -226,7 +230,7 @@ class PointCloudDataset(EventDataset):
 
             assert (
                 w != 1
-            ), "weight value must not exceed 1. If you want to set weight to 1, choose a value close to 1, like 0.998"
+            ), "weight value must not be exactly 1. If you want to set weight to 1, choose a value close to 1, like 0.998"
 
             track_weight = handle_weighting(
                 event,
@@ -287,7 +291,7 @@ class PointCloudDataset(EventDataset):
         idx = random_idx[:n]
 
         if n == -1:
-            idx = random_idx
+            idx = random_idx = torch.arange(N)
 
         return [v[idx] for v in values], idx, random_idx
 
@@ -295,32 +299,134 @@ class PointCloudDataset(EventDataset):
     def sample_from_idx(idx: torch.Tensor, *values: torch.Tensor):
         return [v[idx] for v in values]
 
-class PointCloudDatasetGCN(PointCloudDataset):
-    def get(self, idx):
-        (
-            sample_xyz,
-            neigh_idxs,
-            sub_idxs,
-            interp_idxs,
-            xyz,
-            features,
-            hit_labels,
-            hit_weights,
-            top_pc,
-        ) = super().get(idx)
 
-        top_knn = knn_search(
-            top_pc, top_pc, self.hparams["top_knn"], return_edge_index=True
+class PointCloudDatasetMetricLearning(PointCloudDataset):
+    def __init__(
+        self,
+        input_dir,
+        input_features,
+        node_features,
+        position_features,
+        data_name: str = "",
+        num_events=None,
+        use_csv=False,
+        event_prefix="",
+        variable_with_prefix: bool = False,
+        node_scales: list[float] = [],
+        points_per_batch: int = 1000,
+        knn: list[int] = [],
+        sampling_ratio: list[int] = [],
+        weighting: list[dict] = [{}],
+        stage="fit",
+        transform=None,
+        pre_transform=None,
+        pre_filter=None,
+        subsampling="random",
+        augment_phi: bool = False,
+        **kwargs,
+    ):
+        super().__init__(
+            input_dir,
+            input_features,
+            node_features,
+            position_features,
+            data_name,
+            num_events,
+            use_csv,
+            event_prefix,
+            variable_with_prefix,
+            node_scales,
+            points_per_batch,
+            knn,
+            sampling_ratio,
+            weighting,
+            "predict",
+            transform,
+            pre_transform,
+            pre_filter,
+            subsampling,
+            augment_phi,
+            **kwargs,
         )
 
+    def get(self, idx):
+
+        data = super().get(idx)
+
+        event = data[-1]
+        event_idx = data[-2]
+
+        self.scale_features(event)
+
+        track_edges = event.track_edges
+
+        event.track_weights = handle_weighting(
+            event,
+            weighting_config=self.weighting,
+            pred_edges=track_edges,
+            truth=torch.ones_like(track_edges[0]).bool(),
+            true_edges=track_edges,
+            truth_map=torch.arange(0, track_edges.size(1)),
+        )
+
+        event.track_signal_mask = event.track_weights > 0
+
+        self.unscale_features(event)
+
+        return (*data[:-2], event_idx, event)
+
+
+class PointClassifierDatasetNoSubsampling(PointCloudDataset):
+
+    def get(self, idx):
+
+        data = super().get(idx)
+
+        if self.use_csv:
+            event = data[0]
+            event_idx = data[-1]
+        else:
+            event, event_idx = data
+
+        # augment phi
+        if self.augment_phi:
+            self._augment_phi(event)
+
+        # transform phi
+        self._transform_phi(event)
+
+        hit_labels, hit_weights = self.get_hit_label(event)
+
+        features = sorted(
+            [f for f in self.input_features if f not in self.position_features]
+        )
+
+        features = self.gather_features(event, features)
+
+        xyz = self.gather_features(event, self.position_features)
+
+        data, idx, random_idx = self.random_sample(
+            self.points_per_batch, xyz, features, hit_labels, hit_weights
+        )
+
+        xyz, features, hit_labels, hit_weights = data
+
+        if self.stage in ["predict", "test"]:
+            self.unscale_features(event)
+            return (
+                xyz,
+                features,
+                hit_labels,
+                hit_weights,
+                random_idx,
+                event_idx,
+                event,
+            )
+
         return (
-            sample_xyz,
-            neigh_idxs,
-            sub_idxs,
-            interp_idxs,
             xyz,
             features,
             hit_labels,
             hit_weights,
-            top_knn,
+            random_idx,
         )

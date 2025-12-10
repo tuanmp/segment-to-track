@@ -12,8 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch.nn as nn
 import torch
+import torch.nn as nn
+
+
+def linear_mlp(d_in: int, d_out: int, n_layers: int = 1, act_out=True, layernorm=True):
+
+    modules = []
+    if layernorm:
+        modules.append(nn.LayerNorm(d_in))
+
+    for _ in range(n_layers):
+        modules.append(nn.Linear(d_in, d_out))
+        modules.append(nn.LeakyReLU())
+        d_in = d_out
+
+    if not act_out:
+        modules.pop()
+
+    return nn.Sequential(*modules)
 
 
 def make_mlp(
